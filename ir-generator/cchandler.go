@@ -3,12 +3,14 @@ package ir_generator
 import (
 	"encoding/json"
 	"fmt"
+	cp "github.com/otiai10/copy"
 	"log"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 )
 
 type CompilerCommandCmake struct {
@@ -55,6 +57,24 @@ func (c *CompilerCommandCmake) AddFlags(flags ...string) {
 	newsplits = append(newsplits, splits[:index]...)
 	newsplits = append(newsplits, flags...)
 	newsplits = append(newsplits, splits[index:]...)
+
+	c.Command = strings.Join(newsplits, " ")
+}
+
+func (c *CompilerCommandCmake) DropFlags(flags ...string) {
+	fmap := make(map[string]bool)
+	for _, f := range flags {
+		fmap[f] = true
+	}
+
+	splits := strings.Split(c.Command, " ")
+
+	var newsplits []string
+	for i := 0; i < len(splits); i++ {
+		if _, ok := fmap[splits[i]]; !ok {
+			newsplits = append(newsplits, splits[i])
+		}
+	}
 
 	c.Command = strings.Join(newsplits, " ")
 }
@@ -114,7 +134,7 @@ func (c *CompilerCommandCmake) GetLocalHeaders() []string {
 	splits := strings.Split(c.Command, " ")
 	var headers []string
 	for i := 0; i < len(splits); i++ {
-		if splits[i] == "-include" {
+		if splits[i] == "-include" && !filepath.IsAbs(splits[i+1]) {
 			headers = append(headers, splits[i+1])
 		}
 	}
@@ -134,9 +154,37 @@ func (c *CompilerCommandCmake) Run() {
 	}
 }
 
+func (c *CompilerCommandCmake) TryRun() (string, error) {
+	args := strings.Split(c.Command, " ")
+	cmd := exec.Command(args[0], args[1:]...)
+	cmd.Dir = c.Directory
+
+	output, err := cmd.CombinedOutput()
+	return string(output), err
+}
+
+func (c *CompilerCommandCmake) RunSkipFailed() bool {
+	args := strings.Split(c.Command, " ")
+	cmd := exec.Command(args[0], args[1:]...)
+	cmd.Stderr = os.Stderr
+	cmd.Stdout = os.Stdout
+	cmd.Dir = c.Directory
+
+	if err := cmd.Run(); err != nil {
+		return false
+	}
+
+	return true
+}
+
 type CompilerDatabase struct {
-	Commands []CompilerCommandCmake
-	TopDir   string
+	Commands            []CompilerCommandCmake
+	TopDir              string
+	SolveHeaderNotFound bool
+	SkipFailed          bool
+
+	taskMutex  sync.Mutex
+	taskStatus map[string]bool
 }
 
 func (d *CompilerDatabase) EmitLLVM(clang string) {
@@ -162,6 +210,14 @@ func (d *CompilerDatabase) EmitLLVM(clang string) {
 	}
 }
 
+func (d *CompilerDatabase) dumpStatus() {
+	d.taskMutex.Lock()
+	for k := range d.taskStatus {
+		fmt.Println("Failed", k)
+	}
+	d.taskMutex.Unlock()
+}
+
 func (d *CompilerDatabase) Dump() {
 	b, err := json.MarshalIndent(d.Commands, "", "    ")
 	if err != nil {
@@ -171,16 +227,40 @@ func (d *CompilerDatabase) Dump() {
 }
 
 func (d *CompilerDatabase) run(c CompilerCommandCmake) {
+	if d.SkipFailed {
+		if c.RunSkipFailed() {
+			return
+		}
+
+		d.taskMutex.Lock()
+		d.taskStatus[c.File] = true
+		d.taskMutex.Unlock()
+
+		return
+	}
+
+	if !d.SolveHeaderNotFound {
+		c.Run()
+		return
+	}
+
 	headers := c.GetLocalHeaders()
 	if len(headers) == 0 {
 		c.Run()
 		return
 	}
 
+	// try to copy temporary local headers
 	walkFn := func(path string, dir os.DirEntry, err error) error {
-		base := filepath.Base(path)
+		srcBase := filepath.Base(path)
 		for i := 0; i < len(headers); i++ {
-			if headers[i] == base {
+			dstBase := filepath.Base(headers[i])
+			dstPath := filepath.Join(filepath.Dir(c.File), headers[i])
+
+			// avoid race running
+			if srcBase == dstBase && dstPath != path {
+				_ = cp.Copy(path, dstPath)
+				log.Println("copy", path, dstPath)
 			}
 		}
 		return nil
@@ -188,12 +268,43 @@ func (d *CompilerDatabase) run(c CompilerCommandCmake) {
 
 	_ = filepath.WalkDir(d.TopDir, walkFn)
 
-	c.Run()
+	var output string
+	var err error
+	for try := 0; try < 2; try++ {
+		output, err = c.TryRun()
+		if err == nil {
+			return
+		}
+
+		hint := "' file not found"
+		if !strings.Contains(output, "fatal error:") || !strings.Contains(output, hint) {
+			break
+		}
+
+		headers = []string{}
+		splits := strings.Split(output, hint)
+		for i := 0; i < len(splits); i++ {
+			hBeg := strings.LastIndex(splits[i], "'")
+			if hBeg == -1 {
+				continue
+			}
+			headers = append(headers, splits[i][hBeg+1:])
+		}
+
+		log.Println(headers)
+		_ = filepath.WalkDir(d.TopDir, walkFn)
+	}
+
+	log.Fatalln(output)
 }
 
 func (d *CompilerDatabase) Run() {
 	for i := 0; i < len(d.Commands); i++ {
 		d.run(d.Commands[i])
+	}
+
+	if d.SkipFailed {
+		d.dumpStatus()
 	}
 }
 
@@ -216,6 +327,10 @@ func (d *CompilerDatabase) RunParallel() {
 	}
 
 	close(taskCh)
+
+	if d.SkipFailed {
+		d.dumpStatus()
+	}
 }
 
 func NewCompilerDataBase(ccjson string) *CompilerDatabase {
@@ -224,7 +339,10 @@ func NewCompilerDataBase(ccjson string) *CompilerDatabase {
 		log.Fatalln(err)
 	}
 
-	d := &CompilerDatabase{}
+	d := &CompilerDatabase{
+		taskStatus: make(map[string]bool),
+	}
+	
 	if err = json.Unmarshal(b, &d.Commands); err != nil {
 		log.Fatalln(err)
 	}

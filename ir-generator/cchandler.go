@@ -3,188 +3,44 @@ package ir_generator
 import (
 	"encoding/json"
 	"fmt"
-	cp "github.com/otiai10/copy"
 	"log"
 	"os"
-	"os/exec"
-	"path/filepath"
 	"runtime"
-	"strings"
 	"sync"
 )
 
-type CompilerCommandCmake struct {
-	Directory string `json:"directory"`
-	Command   string `json:"command"`
-	File      string `json:"file"`
-}
+type CCStyle int
 
-func (c *CompilerCommandCmake) ReplaceCompiler(newcompiler string) {
-	splits := strings.Split(c.Command, " ")
-	splits[0] = newcompiler
-	c.Command = strings.Join(splits, " ")
-}
+const (
+	CMakeStyle CCStyle = iota
+	CCJSONStyle
+)
 
-func (c *CompilerCommandCmake) ReplaceTargetExt(newext string) {
-	splits := strings.Split(c.Command, " ")
-	for i := 0; i < len(splits); i++ {
-		if splits[i] != "-o" {
-			continue
-		}
+type CompilerCommand interface {
+	SplitArgs() []string
 
-		if i+1 >= len(splits) {
-			log.Fatalln("There should be a valid filename behind `-o` flag")
-		}
+	Run() error
+	AddFlags(flags ...string)
+	DropFlags(flags ...string)
+	ReplaceCompiler(newcompiler string)
+	ReplaceTargetExt(newext string)
+	SwitchToO0()
+	SwitchToC99()
+	EscapeQuotes()
 
-		filename := splits[i+1]
-		filename = filename[:len(filename)-len(filepath.Ext(filename))]
-		splits[i+1] = filename + newext
-		break
-	}
-
-	c.Command = strings.Join(splits, " ")
-}
-
-func (c *CompilerCommandCmake) AddFlags(flags ...string) {
-	splits := strings.Split(c.Command, " ")
-	var index int
-	for index = 0; index < len(splits); index += 1 {
-		if splits[index] == "-c" {
-			break
-		}
-	}
-	var newsplits []string
-	newsplits = append(newsplits, splits[:index]...)
-	newsplits = append(newsplits, flags...)
-	newsplits = append(newsplits, splits[index:]...)
-
-	c.Command = strings.Join(newsplits, " ")
-}
-
-func (c *CompilerCommandCmake) DropFlags(flags ...string) {
-	fmap := make(map[string]bool)
-	for _, f := range flags {
-		fmap[f] = true
-	}
-
-	splits := strings.Split(c.Command, " ")
-
-	var newsplits []string
-	for i := 0; i < len(splits); i++ {
-		if _, ok := fmap[splits[i]]; !ok {
-			newsplits = append(newsplits, splits[i])
-		}
-	}
-
-	c.Command = strings.Join(newsplits, " ")
-}
-
-func (c *CompilerCommandCmake) SwitchToO0() {
-	splits := strings.Split(c.Command, " ")
-	olist := []string{
-		"-O1",
-		"-O2",
-		"-O3",
-		"-Os",
-		"-Oz",
-		"-Ofast",
-	}
-
-	for i := 0; i < len(splits); i++ {
-		if !strings.HasPrefix(splits[i], "-O") {
-			continue
-		}
-
-		for j := 0; j < len(olist); j++ {
-			if olist[j] == splits[i] {
-				splits[i] = "-O0"
-			}
-		}
-	}
-
-	c.Command = strings.Join(splits, " ")
-}
-
-func (c *CompilerCommandCmake) SwitchToC99() {
-	splits := strings.Split(c.Command, " ")
-	olist := []string{
-		"-std=gnu99",
-	}
-
-	for i := 0; i < len(splits); i++ {
-		if !strings.HasPrefix(splits[i], "-std=") {
-			continue
-		}
-
-		for j := 0; j < len(olist); j++ {
-			if olist[j] == splits[i] {
-				splits[i] = "-std=c99"
-			}
-		}
-	}
-
-	c.Command = strings.Join(splits, " ")
-}
-
-func (c *CompilerCommandCmake) EscapeQuotes() {
-	c.Command = strings.ReplaceAll(c.Command, "\\\"", "\"")
-}
-
-func (c *CompilerCommandCmake) GetLocalHeaders() []string {
-	splits := strings.Split(c.Command, " ")
-	var headers []string
-	for i := 0; i < len(splits); i++ {
-		if splits[i] == "-include" && !filepath.IsAbs(splits[i+1]) {
-			headers = append(headers, splits[i+1])
-		}
-	}
-	return headers
-}
-
-func (c *CompilerCommandCmake) Run() {
-	args := strings.Split(c.Command, " ")
-	cmd := exec.Command(args[0], args[1:]...)
-	cmd.Stderr = os.Stderr
-	cmd.Stdout = os.Stdout
-	cmd.Dir = c.Directory
-
-	if err := cmd.Run(); err != nil {
-		log.Println(c.Command)
-		log.Fatalln(err)
-	}
-}
-
-func (c *CompilerCommandCmake) TryRun() (string, error) {
-	args := strings.Split(c.Command, " ")
-	cmd := exec.Command(args[0], args[1:]...)
-	cmd.Dir = c.Directory
-
-	output, err := cmd.CombinedOutput()
-	return string(output), err
-}
-
-func (c *CompilerCommandCmake) RunSkipFailed() bool {
-	args := strings.Split(c.Command, " ")
-	cmd := exec.Command(args[0], args[1:]...)
-	cmd.Stderr = os.Stderr
-	cmd.Stdout = os.Stdout
-	cmd.Dir = c.Directory
-
-	if err := cmd.Run(); err != nil {
-		return false
-	}
-
-	return true
+	GetFile() string
+	GetTarget() string
 }
 
 type CompilerDatabase struct {
-	Commands            []CompilerCommandCmake
+	Commands            []CompilerCommand
 	TopDir              string
 	SolveHeaderNotFound bool
 	SkipFailed          bool
+	Style               CCStyle
 
-	taskMutex  sync.Mutex
-	taskStatus map[string]bool
+	taskMutex sync.Mutex
+	failFiles map[string]bool
 }
 
 func (d *CompilerDatabase) EmitLLVM(clang string) {
@@ -212,10 +68,14 @@ func (d *CompilerDatabase) EmitLLVM(clang string) {
 
 func (d *CompilerDatabase) dumpStatus() {
 	d.taskMutex.Lock()
-	for k := range d.taskStatus {
+	for k := range d.failFiles {
 		fmt.Println("Failed", k)
 	}
+	failed := float32(len(d.failFiles))
 	d.taskMutex.Unlock()
+
+	total := float32(len(d.Commands))
+	fmt.Printf("Compilation success rate: %.2f%%\n", (total-failed)/total*100)
 }
 
 func (d *CompilerDatabase) Dump() {
@@ -226,80 +86,24 @@ func (d *CompilerDatabase) Dump() {
 	fmt.Println(string(b))
 }
 
-func (d *CompilerDatabase) run(c CompilerCommandCmake) {
-	if d.SkipFailed {
-		if c.RunSkipFailed() {
-			return
-		}
+func (d *CompilerDatabase) run(c CompilerCommand) {
+	err := c.Run()
+	if err != nil && !d.SkipFailed {
+		log.Fatalln(err)
+	}
 
+	if err != nil {
 		d.taskMutex.Lock()
-		d.taskStatus[c.File] = true
+		d.failFiles[c.GetTarget()] = true
 		d.taskMutex.Unlock()
-
-		return
 	}
-
-	if !d.SolveHeaderNotFound {
-		c.Run()
-		return
-	}
-
-	headers := c.GetLocalHeaders()
-	if len(headers) == 0 {
-		c.Run()
-		return
-	}
-
-	// try to copy temporary local headers
-	walkFn := func(path string, dir os.DirEntry, err error) error {
-		srcBase := filepath.Base(path)
-		for i := 0; i < len(headers); i++ {
-			dstBase := filepath.Base(headers[i])
-			dstPath := filepath.Join(filepath.Dir(c.File), headers[i])
-
-			// avoid race running
-			if srcBase == dstBase && dstPath != path {
-				_ = cp.Copy(path, dstPath)
-				log.Println("copy", path, dstPath)
-			}
-		}
-		return nil
-	}
-
-	_ = filepath.WalkDir(d.TopDir, walkFn)
-
-	var output string
-	var err error
-	for try := 0; try < 2; try++ {
-		output, err = c.TryRun()
-		if err == nil {
-			return
-		}
-
-		hint := "' file not found"
-		if !strings.Contains(output, "fatal error:") || !strings.Contains(output, hint) {
-			break
-		}
-
-		headers = []string{}
-		splits := strings.Split(output, hint)
-		for i := 0; i < len(splits); i++ {
-			hBeg := strings.LastIndex(splits[i], "'")
-			if hBeg == -1 {
-				continue
-			}
-			headers = append(headers, splits[i][hBeg+1:])
-		}
-
-		log.Println(headers)
-		_ = filepath.WalkDir(d.TopDir, walkFn)
-	}
-
-	log.Fatalln(output)
 }
 
 func (d *CompilerDatabase) Run() {
-	for i := 0; i < len(d.Commands); i++ {
+	fmt.Println()
+	total := len(d.Commands)
+	for i := 0; i < total; i++ {
+		fmt.Printf("processing [%d/%d]\n", i+1, total)
 		d.run(d.Commands[i])
 	}
 
@@ -310,42 +114,76 @@ func (d *CompilerDatabase) Run() {
 
 func (d *CompilerDatabase) RunParallel() {
 	jobs := runtime.NumCPU() / 2
-	taskCh := make(chan CompilerCommandCmake, jobs)
+	taskCh := make(chan CompilerCommand, jobs)
+	total := len(d.Commands)
 
+	var wg sync.WaitGroup
+	wg.Add(total)
 	for i := 0; i < jobs; i++ {
 		go func() {
 			for task := range taskCh {
 				d.run(task)
+				wg.Done()
 			}
 		}()
 	}
 
-	total := len(d.Commands)
+	fmt.Println()
 	for i := 0; i < total; i++ {
 		taskCh <- d.Commands[i]
-		log.Printf("processing [%d/%d]\n", i, total)
+		fmt.Printf("processing [%d/%d]\n", i+1, total)
 	}
 
 	close(taskCh)
+	wg.Wait()
 
 	if d.SkipFailed {
 		d.dumpStatus()
 	}
 }
 
-func NewCompilerDataBase(ccjson string) *CompilerDatabase {
+func (d *CompilerDatabase) Load(ccjson string) {
 	b, err := os.ReadFile(ccjson)
 	if err != nil {
 		log.Fatalln(err)
 	}
 
-	d := &CompilerDatabase{
-		taskStatus: make(map[string]bool),
-	}
-	
-	if err = json.Unmarshal(b, &d.Commands); err != nil {
-		log.Fatalln(err)
-	}
+	fileSet := make(map[string]bool)
 
-	return d
+	switch d.Style {
+	case CMakeStyle:
+		var commands []CMakeCC
+		if err = json.Unmarshal(b, &commands); err != nil {
+			log.Fatalln(err)
+		}
+		for i := range commands {
+			file := commands[i].GetTarget()
+			if fileSet[file] {
+				continue
+			}
+
+			d.Commands = append(d.Commands, &commands[i])
+			fileSet[file] = true
+		}
+	case CCJSONStyle:
+		var commands []BearCC
+		if err = json.Unmarshal(b, &commands); err != nil {
+			log.Fatalln(err)
+		}
+		for i := range commands {
+			file := commands[i].GetTarget()
+			if fileSet[file] {
+				continue
+			}
+
+			d.Commands = append(d.Commands, &commands[i])
+			fileSet[file] = true
+		}
+	}
+}
+
+func NewCompilerDataBase() *CompilerDatabase {
+	return &CompilerDatabase{
+		failFiles: make(map[string]bool),
+	}
 }

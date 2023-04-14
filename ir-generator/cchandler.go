@@ -43,6 +43,19 @@ type CompilerDatabase struct {
 	failFiles map[string]bool
 }
 
+func (d *CompilerDatabase) GetAllExistTargets() []string {
+	var result []string
+	for _, c := range d.Commands {
+		tgt := c.GetTarget()
+		if _, err := os.Stat(tgt); os.IsNotExist(err) {
+			continue
+		}
+
+		result = append(result, tgt)
+	}
+	return result
+}
+
 func (d *CompilerDatabase) EmitLLVM(clang string) {
 	flags := []string{
 		"-emit-llvm",

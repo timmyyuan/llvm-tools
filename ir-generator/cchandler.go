@@ -43,6 +43,19 @@ type CompilerDatabase struct {
 	failFiles map[string]bool
 }
 
+func (d *CompilerDatabase) GetAllExistTargets() []string {
+	var result []string
+	for _, c := range d.Commands {
+		tgt := c.GetTarget()
+		if _, err := os.Stat(tgt); os.IsNotExist(err) {
+			continue
+		}
+
+		result = append(result, tgt)
+	}
+	return result
+}
+
 func (d *CompilerDatabase) EmitLLVM(clang string) {
 	flags := []string{
 		"-emit-llvm",
@@ -61,6 +74,29 @@ func (d *CompilerDatabase) EmitLLVM(clang string) {
 	for i := range d.Commands {
 		d.Commands[i].ReplaceCompiler(clang)
 		d.Commands[i].ReplaceTargetExt(".bc")
+		d.Commands[i].SwitchToO0()
+		// d.Commands[i].SwitchToC99()
+		d.Commands[i].AddFlags(flags...)
+		d.Commands[i].EscapeQuotes()
+	}
+}
+
+func (d *CompilerDatabase) EmitClangAST(clang string) {
+	flags := []string{
+		"-emit-ast",
+		"-g",
+		"-Wno-shift-count-negative",
+		"-Wno-division-by-zero",
+		"-fno-inline-functions",
+		"-Wno-ignored-optimization-argument",
+		"-Xclang",
+		"-disable-O0-optnone",
+		"-Wno-everything",
+	}
+
+	for i := range d.Commands {
+		d.Commands[i].ReplaceCompiler(clang)
+		d.Commands[i].ReplaceTargetExt(".ast")
 		d.Commands[i].SwitchToO0()
 		// d.Commands[i].SwitchToC99()
 		d.Commands[i].AddFlags(flags...)
@@ -141,6 +177,18 @@ func (d *CompilerDatabase) RunParallel() {
 
 	if d.SkipFailed {
 		d.dumpStatus()
+	}
+}
+
+func (d *CompilerDatabase) Rewrite(ccjson string) {
+	b, err := json.MarshalIndent(d, "", "    ")
+	if err != nil {
+		log.Fatalln(err)
+	}
+
+	err = os.WriteFile(ccjson, b, 0644)
+	if err != nil {
+		log.Fatalln(err)
 	}
 }
 

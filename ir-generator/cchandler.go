@@ -13,7 +13,7 @@ type CCStyle int
 
 const (
 	CMakeStyle CCStyle = iota
-	CCJSONStyle
+	BearStyle
 )
 
 type CompilerCommand interface {
@@ -53,6 +53,8 @@ func (d *CompilerDatabase) EmitLLVM(clang string) {
 		"-Wno-ignored-optimization-argument",
 		"-Xclang",
 		"-disable-O0-optnone",
+		"-Xclang",
+		"-disable-llvm-optzns",
 		"-Wno-everything",
 	}
 
@@ -165,7 +167,7 @@ func (d *CompilerDatabase) Load(ccjson string) {
 			d.Commands = append(d.Commands, &commands[i])
 			fileSet[file] = true
 		}
-	case CCJSONStyle:
+	case BearStyle:
 		var commands []BearCC
 		if err = json.Unmarshal(b, &commands); err != nil {
 			log.Fatalln(err)

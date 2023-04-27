@@ -14,6 +14,10 @@ type BearCC struct {
 	File      string   `json:"file"`
 }
 
+func (c *BearCC) String() string {
+	return strings.Join(c.Args, " ")
+}
+
 func (c *BearCC) SplitArgs() []string {
 	return c.Args
 }

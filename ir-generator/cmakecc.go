@@ -14,6 +14,10 @@ type CMakeCC struct {
 	File      string `json:"file"`
 }
 
+func (c *CMakeCC) String() string {
+	return c.Command
+}
+
 func (c *CMakeCC) SplitArgs() []string {
 	return strings.Split(c.Command, " ")
 }

@@ -5,7 +5,9 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"os/exec"
 	"runtime"
+	"strings"
 	"sync"
 )
 
@@ -30,6 +32,7 @@ type CompilerCommand interface {
 
 	GetFile() string
 	GetTarget() string
+	String() string
 }
 
 type CompilerDatabase struct {
@@ -56,6 +59,20 @@ func (d *CompilerDatabase) GetAllExistTargets() []string {
 	return result
 }
 
+func (d *CompilerDatabase) LLVMLink(llvmlink string, output string) error {
+	targets := d.GetAllExistTargets()
+	args := []string{
+		llvmlink,
+	}
+	args = append(args, targets...)
+	args = append(args, "-o", output)
+	cmd := exec.Command(args[0], args[1:]...)
+	cmd.Stderr = os.Stderr
+	cmd.Stdout = os.Stdout
+
+	return cmd.Run()
+}
+
 func (d *CompilerDatabase) EmitLLVM(clang string) {
 	flags := []string{
 		"-emit-llvm",
@@ -66,15 +83,17 @@ func (d *CompilerDatabase) EmitLLVM(clang string) {
 		"-Wno-ignored-optimization-argument",
 		"-Xclang",
 		"-disable-O0-optnone",
+		//"-Xclang",
+		//"-disable-llvm-optzns",
 		"-Xclang",
-		"-disable-llvm-optzns",
+		"-disable-llvm-passes",
 		"-Wno-everything",
 	}
 
 	for i := range d.Commands {
 		d.Commands[i].ReplaceCompiler(clang)
 		d.Commands[i].ReplaceTargetExt(".bc")
-		d.Commands[i].SwitchToO0()
+		// d.Commands[i].SwitchToO0()
 		// d.Commands[i].SwitchToC99()
 		d.Commands[i].AddFlags(flags...)
 		d.Commands[i].EscapeQuotes()
@@ -97,7 +116,7 @@ func (d *CompilerDatabase) EmitClangAST(clang string) {
 	for i := range d.Commands {
 		d.Commands[i].ReplaceCompiler(clang)
 		d.Commands[i].ReplaceTargetExt(".ast")
-		d.Commands[i].SwitchToO0()
+		// d.Commands[i].SwitchToO0()
 		// d.Commands[i].SwitchToC99()
 		d.Commands[i].AddFlags(flags...)
 		d.Commands[i].EscapeQuotes()
@@ -147,6 +166,17 @@ func (d *CompilerDatabase) Run() {
 
 	if d.SkipFailed {
 		d.dumpStatus()
+	}
+}
+
+func (d *CompilerDatabase) RunOnly(file string) {
+	fmt.Println()
+	for i := 0; i < len(d.Commands); i++ {
+		cmd := d.Commands[i]
+		if strings.HasSuffix(cmd.GetFile(), file) {
+			fmt.Println(cmd)
+			d.run(cmd)
+		}
 	}
 }
 

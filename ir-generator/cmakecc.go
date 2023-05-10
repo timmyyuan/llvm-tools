@@ -19,7 +19,15 @@ func (c *CMakeCC) String() string {
 }
 
 func (c *CMakeCC) SplitArgs() []string {
-	return strings.Split(c.Command, " ")
+	var args []string
+	
+	splits := strings.Split(c.String(), " ")
+	for _, s := range splits {
+		if len(strings.TrimSpace(s)) != 0 {
+			args = append(args, s)
+		}
+	}
+	return args
 }
 
 func (c *CMakeCC) GetFile() string {
@@ -150,13 +158,8 @@ func (c *CMakeCC) SwitchToC99() {
 	c.Command = strings.Join(splits, " ")
 }
 
-func (c *CMakeCC) EscapeQuotes() {
-	c.Command = strings.ReplaceAll(c.Command, "\\\"", "\"")
-}
-
 func (c *CMakeCC) Run() error {
-	args := strings.Split(c.Command, " ")
-	cmd := exec.Command(args[0], args[1:]...)
+	cmd := exec.Command("sh", "-c", c.Command)
 	cmd.Stderr = os.Stderr
 	cmd.Stdout = os.Stdout
 	cmd.Dir = c.Directory

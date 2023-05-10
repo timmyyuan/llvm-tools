@@ -28,7 +28,6 @@ type CompilerCommand interface {
 	ReplaceTargetExt(newext string)
 	SwitchToO0()
 	SwitchToC99()
-	EscapeQuotes()
 
 	GetFile() string
 	GetTarget() string
@@ -96,7 +95,6 @@ func (d *CompilerDatabase) EmitLLVM(clang string) {
 		// d.Commands[i].SwitchToO0()
 		// d.Commands[i].SwitchToC99()
 		d.Commands[i].AddFlags(flags...)
-		d.Commands[i].EscapeQuotes()
 	}
 }
 
@@ -119,7 +117,6 @@ func (d *CompilerDatabase) EmitClangAST(clang string) {
 		// d.Commands[i].SwitchToO0()
 		// d.Commands[i].SwitchToC99()
 		d.Commands[i].AddFlags(flags...)
-		d.Commands[i].EscapeQuotes()
 	}
 }
 
@@ -146,6 +143,13 @@ func (d *CompilerDatabase) Dump() {
 func (d *CompilerDatabase) run(c CompilerCommand) {
 	err := c.Run()
 	if err != nil && !d.SkipFailed {
+		args := c.SplitArgs()
+		fmt.Println("Failed commands:")
+		for _, a := range args {
+			fmt.Println(a)
+		}
+
+		log.Println(c)
 		log.Fatalln(err)
 	}
 

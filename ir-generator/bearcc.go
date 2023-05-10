@@ -146,10 +146,6 @@ func (c *BearCC) SwitchToC99() {
 	}
 }
 
-func (c *BearCC) EscapeQuotes() {
-	return
-}
-
 func (c *BearCC) Run() error {
 	cmd := exec.Command(c.Args[0], c.Args[1:]...)
 	cmd.Stderr = os.Stderr

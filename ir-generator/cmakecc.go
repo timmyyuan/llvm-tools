@@ -20,7 +20,7 @@ func (c *CMakeCC) String() string {
 
 func (c *CMakeCC) SplitArgs() []string {
 	var args []string
-	
+
 	splits := strings.Split(c.String(), " ")
 	for _, s := range splits {
 		if len(strings.TrimSpace(s)) != 0 {
@@ -32,6 +32,10 @@ func (c *CMakeCC) SplitArgs() []string {
 
 func (c *CMakeCC) GetFile() string {
 	return c.File
+}
+
+func (c *CMakeCC) GetDirectory() string {
+	return c.Directory
 }
 
 func (c *CMakeCC) GetTarget() string {

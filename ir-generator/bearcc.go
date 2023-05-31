@@ -44,6 +44,10 @@ func (c *BearCC) GetTarget() string {
 	return c.File + ".o"
 }
 
+func (c *BearCC) GetDirectory() string {
+	return c.Directory
+}
+
 func (c *BearCC) ReplaceCompiler(newcompiler string) {
 	c.Args[0] = newcompiler
 }

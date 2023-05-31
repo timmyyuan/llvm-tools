@@ -31,15 +31,18 @@ type CompilerCommand interface {
 
 	GetFile() string
 	GetTarget() string
+	GetDirectory() string
 	String() string
 }
 
 type CompilerDatabase struct {
+	Opt
 	Commands            []CompilerCommand
 	TopDir              string
 	SolveHeaderNotFound bool
 	SkipFailed          bool
-	Style               CCStyle
+
+	Style CCStyle
 
 	taskMutex sync.Mutex
 	failFiles map[string]bool
@@ -84,6 +87,7 @@ func (d *CompilerDatabase) EmitLLVM(clang string) {
 		"-disable-O0-optnone",
 		//"-Xclang",
 		//"-disable-llvm-optzns",
+		"-flto",
 		"-Xclang",
 		"-disable-llvm-passes",
 		"-Wno-everything",
@@ -140,6 +144,12 @@ func (d *CompilerDatabase) Dump() {
 	fmt.Println(string(b))
 }
 
+func (d *CompilerDatabase) markFailed(tgt string) {
+	d.taskMutex.Lock()
+	d.failFiles[tgt] = true
+	d.taskMutex.Unlock()
+}
+
 func (d *CompilerDatabase) run(c CompilerCommand) {
 	err := c.Run()
 	if err != nil && !d.SkipFailed {
@@ -153,10 +163,21 @@ func (d *CompilerDatabase) run(c CompilerCommand) {
 		log.Fatalln(err)
 	}
 
+	target := c.GetTarget()
+	directory := c.GetDirectory()
+
 	if err != nil {
-		d.taskMutex.Lock()
-		d.failFiles[c.GetTarget()] = true
-		d.taskMutex.Unlock()
+		d.markFailed(target)
+		return
+	}
+
+	if !d.Opt.NeedRun() {
+		return
+	}
+
+	if err = d.Opt.Run(target, directory); err != nil {
+		d.markFailed(target)
+		return
 	}
 }
 

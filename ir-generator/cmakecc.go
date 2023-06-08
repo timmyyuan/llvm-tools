@@ -52,7 +52,8 @@ func (c *CMakeCC) GetTarget() string {
 		return splits[i+1]
 	}
 
-	return ""
+	ext := filepath.Ext(c.File)
+	return c.File[:len(c.File)-len(ext)] + ".o"
 }
 
 func (c *CMakeCC) ReplaceCompiler(newcompiler string) {

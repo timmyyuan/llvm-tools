@@ -75,12 +75,11 @@ func (c *BearCC) ReplaceTargetExt(newext string) {
 
 func (c *BearCC) AddFlags(flags ...string) {
 	splits := c.Args
-	var index int
-	for index = 0; index < len(splits); index += 1 {
-		if splits[index] == "-c" {
-			break
-		}
-	}
+	
+	// Append additional flags at the end of arguments to 
+	// override previous flags
+	index := len(splits) - 1
+
 	var newsplits []string
 	newsplits = append(newsplits, splits[:index]...)
 	newsplits = append(newsplits, flags...)

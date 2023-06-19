@@ -3,9 +3,10 @@ package ir_generator
 import (
 	"encoding/json"
 	"fmt"
+	"github.com/fatih/color"
 	"log"
+	"math"
 	"os"
-	"os/exec"
 	"runtime"
 	"strings"
 	"sync"
@@ -16,6 +17,7 @@ type CCStyle int
 const (
 	CMakeStyle CCStyle = iota
 	BearStyle
+	AutoStyle
 )
 
 type CompilerCommand interface {
@@ -35,14 +37,19 @@ type CompilerCommand interface {
 	String() string
 }
 
-type CompilerDatabase struct {
+type BuildOptions struct {
 	Opt
-	Commands            []CompilerCommand
-	TopDir              string
 	SolveHeaderNotFound bool
-	SkipFailed          bool
+	SkipFailure         bool
+	Incremental         bool
+	Jobs                int
+	Style               CCStyle
+}
 
-	Style CCStyle
+type CompilerDatabase struct {
+	BuildOptions
+	Commands []CompilerCommand
+	TopDir   string
 
 	taskMutex sync.Mutex
 	failFiles map[string]bool
@@ -61,18 +68,12 @@ func (d *CompilerDatabase) GetAllExistTargets() []string {
 	return result
 }
 
-func (d *CompilerDatabase) LLVMLink(llvmlink string, output string) error {
-	targets := d.GetAllExistTargets()
-	args := []string{
-		llvmlink,
-	}
-	args = append(args, targets...)
-	args = append(args, "-o", output)
-	cmd := exec.Command(args[0], args[1:]...)
-	cmd.Stderr = os.Stderr
-	cmd.Stdout = os.Stdout
+func (d *CompilerDatabase) LLVMLink(output string) error {
+	linker := NewLLVMLinker()
+	linker.Targets = d.GetAllExistTargets()
+	linker.Output = output
 
-	return cmd.Run()
+	return linker.Link()
 }
 
 func (d *CompilerDatabase) EmitLLVM(clang string) {
@@ -150,11 +151,24 @@ func (d *CompilerDatabase) markFailed(tgt string) {
 	d.taskMutex.Unlock()
 }
 
-func (d *CompilerDatabase) run(c CompilerCommand) {
+func (d *CompilerDatabase) run(index int) {
+	c := d.Commands[index]
+	total := len(d.Commands)
+	rate := int(math.Round(float64(index+1) / float64(total) * 100))
+
+	tgt := c.GetTarget()
+	directory := c.GetDirectory()
+
+	if !d.needRun(c) {
+		fmt.Printf("built    [%3d%%] %s\n", rate, tgt)
+		return
+	}
+
+	color.Green("building [%3d%%] %s", rate, tgt)
 	err := c.Run()
-	if err != nil && !d.SkipFailed {
+	if err != nil && !d.SkipFailure {
 		args := c.SplitArgs()
-		fmt.Println("Failed commands:")
+		color.Red("Failed commands:")
 		for _, a := range args {
 			fmt.Println(a)
 		}
@@ -163,33 +177,49 @@ func (d *CompilerDatabase) run(c CompilerCommand) {
 		log.Fatalln(err)
 	}
 
-	target := c.GetTarget()
-	directory := c.GetDirectory()
-
 	if err != nil {
-		d.markFailed(target)
+		d.markFailed(tgt)
 		return
 	}
+
+	fmt.Printf("built    [%3d%%] %s\n", rate, tgt)
 
 	if !d.Opt.NeedRun() {
 		return
 	}
 
-	if err = d.Opt.Run(target, directory); err != nil {
-		d.markFailed(target)
+	// avoid data race
+	opt := NewOpt(d.Opt)
+
+	if err = opt.Run(tgt, directory); err != nil {
+		d.markFailed(tgt)
 		return
 	}
+
+	color.Cyan("opt      [%3d%%] %s", rate, tgt)
+}
+
+func (d *CompilerDatabase) needRun(c CompilerCommand) bool {
+	if d.Incremental == false {
+		return true
+	}
+
+	tgt := c.GetTarget()
+	if info, err := os.Stat(tgt); err == nil {
+		return info.Size() == 0
+	}
+
+	return true
 }
 
 func (d *CompilerDatabase) Run() {
 	fmt.Println()
 	total := len(d.Commands)
 	for i := 0; i < total; i++ {
-		fmt.Printf("processing [%d/%d]\n", i+1, total)
-		d.run(d.Commands[i])
+		d.run(i)
 	}
 
-	if d.SkipFailed {
+	if d.SkipFailure {
 		d.dumpStatus()
 	}
 }
@@ -200,19 +230,18 @@ func (d *CompilerDatabase) RunOnly(file string) {
 		cmd := d.Commands[i]
 		if strings.HasSuffix(cmd.GetFile(), file) {
 			fmt.Println(cmd)
-			d.run(cmd)
+			d.run(i)
 		}
 	}
 }
 
 func (d *CompilerDatabase) RunParallel() {
-	jobs := runtime.NumCPU() / 2
-	taskCh := make(chan CompilerCommand, jobs)
+	taskCh := make(chan int, d.Jobs)
 	total := len(d.Commands)
 
 	var wg sync.WaitGroup
 	wg.Add(total)
-	for i := 0; i < jobs; i++ {
+	for i := 0; i < d.Jobs; i++ {
 		go func() {
 			for task := range taskCh {
 				d.run(task)
@@ -223,14 +252,20 @@ func (d *CompilerDatabase) RunParallel() {
 
 	fmt.Println()
 	for i := 0; i < total; i++ {
-		taskCh <- d.Commands[i]
-		fmt.Printf("processing [%d/%d]\n", i+1, total)
+		if !d.needRun(d.Commands[i]) {
+			wg.Done()
+			rate := int(math.Round(float64(i+1) / float64(total) * 100))
+			fmt.Printf("built    [%3d%%] %s\n", rate, d.Commands[i].GetTarget())
+			continue
+		}
+
+		taskCh <- i
 	}
 
 	close(taskCh)
 	wg.Wait()
 
-	if d.SkipFailed {
+	if d.SkipFailure {
 		d.dumpStatus()
 	}
 }
@@ -253,42 +288,75 @@ func (d *CompilerDatabase) Load(ccjson string) {
 		log.Fatalln(err)
 	}
 
-	fileSet := make(map[string]bool)
+	var ok bool
 
 	switch d.Style {
 	case CMakeStyle:
-		var commands []CMakeCC
-		if err = json.Unmarshal(b, &commands); err != nil {
-			log.Fatalln(err)
-		}
-		for i := range commands {
-			file := commands[i].GetTarget()
-			if fileSet[file] {
-				continue
-			}
-
-			d.Commands = append(d.Commands, &commands[i])
-			fileSet[file] = true
-		}
+		loadCommands[*CMakeCC](d, b, true)
 	case BearStyle:
-		var commands []BearCC
-		if err = json.Unmarshal(b, &commands); err != nil {
-			log.Fatalln(err)
+		loadCommands[*BearCC](d, b, true)
+	case AutoStyle:
+		if ok = loadCommands[*BearCC](d, b, false); ok {
+			d.Style = BearStyle
+			return
 		}
-		for i := range commands {
-			file := commands[i].GetTarget()
-			if fileSet[file] {
-				continue
-			}
-
-			d.Commands = append(d.Commands, &commands[i])
-			fileSet[file] = true
+		if ok = loadCommands[*CMakeCC](d, b, false); ok {
+			d.Style = CMakeStyle
+			return
 		}
 	}
 }
 
+func loadCommands[T CompilerCommand](d *CompilerDatabase, b []byte, reportFatal bool) bool {
+	var commands []T
+	fileSet := make(map[string]bool)
+	if err := json.Unmarshal(b, &commands); err != nil {
+		if !reportFatal {
+			log.Fatalln(err)
+		}
+		return false
+	}
+
+	var hasEmpty bool
+	for i := 0; i < len(commands) && !hasEmpty; i++ {
+		if len(commands[i].SplitArgs()) == 0 {
+			hasEmpty = true
+		}
+	}
+
+	if hasEmpty {
+		return false
+	}
+
+	isInvalidSource := func(file string) bool {
+		suffix := []string{".s", ".S"}
+		for _, s := range suffix {
+			if strings.HasSuffix(file, s) {
+				return true
+			}
+		}
+		return false
+	}
+
+	for i := range commands {
+		file := commands[i].GetTarget()
+		if fileSet[file] {
+			continue
+		}
+
+		if isInvalidSource(commands[i].GetFile()) {
+			continue
+		}
+
+		d.Commands = append(d.Commands, commands[i])
+		fileSet[file] = true
+	}
+	return len(commands) != 0
+}
+
 func NewCompilerDataBase() *CompilerDatabase {
 	return &CompilerDatabase{
-		failFiles: make(map[string]bool),
+		BuildOptions: BuildOptions{Jobs: runtime.NumCPU() / 2},
+		failFiles:    make(map[string]bool),
 	}
 }

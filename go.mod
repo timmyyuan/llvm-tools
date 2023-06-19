@@ -1,8 +1,11 @@
 module github.com/timmyyuan/llvm-tools
 
-go 1.17
+go 1.18
+
+require github.com/fatih/color v1.15.0
 
 require (
-	github.com/otiai10/copy v1.10.0 // indirect
+	github.com/mattn/go-colorable v0.1.13 // indirect
+	github.com/mattn/go-isatty v0.0.17 // indirect
 	golang.org/x/sys v0.7.0 // indirect
 )

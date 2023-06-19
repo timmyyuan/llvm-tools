@@ -13,6 +13,13 @@ type Opt struct {
 	EnableOptMem2Reg       bool
 }
 
+func NewOpt(opt Opt) *Opt {
+	return &Opt{
+		EnableOptModuleSummary: opt.EnableOptModuleSummary,
+		EnableOptMem2Reg:       opt.EnableOptMem2Reg,
+	}
+}
+
 func (o *Opt) initOptions() {
 	if o.EnableOptModuleSummary {
 		o.analysisOptions = append(o.analysisOptions, "-module-summary")
@@ -26,6 +33,10 @@ func (o *Opt) initOptions() {
 }
 
 func (o *Opt) NeedRun() bool {
+	if _, err := exec.LookPath("opt"); err != nil {
+		return false
+	}
+
 	return o.EnableOptModuleSummary || o.EnableOptMem2Reg
 }
 

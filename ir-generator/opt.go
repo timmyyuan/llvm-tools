@@ -7,6 +7,7 @@ import (
 )
 
 type Opt struct {
+	Name                   string
 	passOptions            []string
 	analysisOptions        []string
 	EnableOptModuleSummary bool
@@ -15,8 +16,16 @@ type Opt struct {
 
 func NewOpt(opt Opt) *Opt {
 	return &Opt{
+		Name:                   "opt",
 		EnableOptModuleSummary: opt.EnableOptModuleSummary,
 		EnableOptMem2Reg:       opt.EnableOptMem2Reg,
+	}
+}
+
+func NewDefaultOpt() *Opt {
+	return &Opt{
+		EnableOptModuleSummary: true,
+		EnableOptMem2Reg:       true,
 	}
 }
 
@@ -33,7 +42,7 @@ func (o *Opt) initOptions() {
 }
 
 func (o *Opt) NeedRun() bool {
-	if _, err := exec.LookPath("opt"); err != nil {
+	if _, err := exec.LookPath(o.Name); err != nil {
 		return false
 	}
 
@@ -52,7 +61,7 @@ func (o *Opt) Run(target, directory string) error {
 		return cmd.Run()
 	}
 
-	args := []string{"opt"}
+	args := []string{o.Name}
 	args = append(args, o.analysisOptions...)
 	args = append(args, "-passes="+strings.Join(o.passOptions, ","))
 	args = append(args, target, "-o", target)

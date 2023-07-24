@@ -65,6 +65,17 @@ func (c *BearCC) ReplaceTargetExt(newext string) {
 
 		filename := splits[i+1]
 		filename = filename[:len(filename)-len(filepath.Ext(filename))]
+
+		if !filepath.IsAbs(filename) {
+			filename = filepath.Join(c.Directory, filename)
+			filedir := filepath.Dir(filename)
+			if _, err := os.Stat(filedir); os.IsNotExist(err) {
+				if err = os.MkdirAll(filedir, 0750); err != nil {
+					log.Fatalln(err)
+				}
+			}
+		}
+
 		splits[i+1] = filename + newext
 		return
 	}
@@ -75,10 +86,10 @@ func (c *BearCC) ReplaceTargetExt(newext string) {
 
 func (c *BearCC) AddFlags(flags ...string) {
 	splits := c.Args
-	
-	// Append additional flags at the end of arguments to 
+
+	// Append additional flags at the end of arguments to
 	// override previous flags
-	index := len(splits) - 1
+	index := len(splits)
 
 	var newsplits []string
 	newsplits = append(newsplits, splits[:index]...)
